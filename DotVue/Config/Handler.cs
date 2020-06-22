@@ -12,6 +12,7 @@ using System.Net.Http;
 using Microsoft.AspNetCore.Hosting;
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
+using Newtonsoft.Json;
 
 namespace DotVue
 {
@@ -43,21 +44,53 @@ namespace DotVue
             {
                 response.ContentType = "text/javascript";
 
-                // output javascript lib
-                var js = new StreamReader(typeof(Handler)
+                _config.Discover(context.RequestServices);
+
+                var writer = new StringBuilder();
+                var render = new ComponentRender(writer);
+
+                writer.Append("(function() {\n");
+
+                // inject dot-vue.js
+                writer.Append(new StreamReader(typeof(Handler)
                     .Assembly
                     .GetManifestResourceStream("DotVue.Scripts.dot-vue.js"))
-                    .ReadToEnd();
+                    .ReadToEnd());
 
-                var writer = new StringBuilder(js);
+                // inject global script
+                writer.Append(_config.GlobalScripts);
 
-                writer.Append("\n\n//\n// Registering Vue Components\n//\n");
+                writer.Append("//\n// Create Vue Components\n//\n");
 
-                // discover all components
-                foreach (var comp in _config.Discover(user, context.RequestServices))
+                foreach (var component in _config.GetComponents().Where(x => !string.IsNullOrWhiteSpace(x.Template)))
                 {
-                    writer.Append($"Vue.component('{comp}', Vue.$loadComponent('{comp}'));\n");
+                    writer.Append($"const {component.Name} = ");
+
+                    if (component.IsAsync)
+                    {
+                        writer.Append($"DotVue.async('{component.Name}')");
+                    }
+                    else
+                    {
+                        render.RenderComponent(component);
+                    }
+
+                    writer.Append($";\n");
                 }
+
+                writer.Append("\n//\n// Registering Vue Components\n//\n");
+
+                render.RenderRegister(_config.GetComponents().Where(x => x.IsPage == false && !string.IsNullOrWhiteSpace(x.Template)));
+
+                writer.Append("\n//\n// Registering Vue Routes\n//\n");
+
+                render.RenderRoutes(_config.GetComponents().Where(x => x.IsPage == true && !string.IsNullOrWhiteSpace(x.Template)).ToList());
+
+                writer.Append("\n//\n// Registering Styles\n//\n");
+
+                render.RenderStyles(_config.GetComponents());
+
+                writer.Append("})();");
 
                 await response.WriteAsync(writer.ToString());
             }
@@ -65,26 +98,32 @@ namespace DotVue
             {
                 response.ContentType = "text/javascript";
 
+                _config.Discover(context.RequestServices);
+                
                 // render component script
-                var component = _config.Load(user, context.RequestServices, name);
-                var render = new ComponentRender(component, user);
-                var sb = new StringBuilder();
+                var component = _config.GetComponent(name);
+                var writer = new StringBuilder();
+                var render = new ComponentRender(writer);
+                
+                render.RenderComponent(component);
 
-                render.RenderScript(sb);
-
-                await response.WriteAsync(sb.ToString());
+                await response.WriteAsync(writer.ToString());
             }
             else if (isPost)
             {
                 response.ContentType = "text/json";
-
+                
                 // execute component update
                 var data = request.Form["data"];
                 var props = request.Form["props"];
                 var method = request.Form["method"];
                 var parameters = JArray.Parse(request.Form["params"]).ToArray();
 
-                var component = _config.Load(user, context.RequestServices, name);
+                var component = _config.GetComponent(name);
+
+                // check for autentication at viewModel level
+                if (component.IsAuthenticated && context.User.Identity.IsAuthenticated == false) throw new HttpException(401);
+                if (component.Roles.Length > 0 && component.Roles.Any(x => context.User.IsInRole(x)) == false) throw new HttpException(403, $"Forbidden. This view model requires all this roles: `{string.Join("`, `", component.Roles)}`");
 
                 var update = new ComponentUpdate(component, user);
 
@@ -92,7 +131,14 @@ namespace DotVue
 
                 var vm = (ViewModel)ActivatorUtilities.CreateInstance(context.RequestServices, component.ViewModelType);
 
-                await update.UpdateModel(vm, data, props, method, parameters, request.Form.Files, writer);
+                // adding reference to viewmodel
+                var vueContext = context.RequestServices.GetService<IVueContext>();
+
+                vueContext.HttpContext = context;
+                vueContext.ViewModel = vm;
+                vueContext.Method = method;
+
+                await update.UpdateModel(vm, data, props, method, parameters, context, writer);
             }
         }
     }

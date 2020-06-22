@@ -22,6 +22,8 @@ namespace WebApp
             services.AddSingleton<IOperationSingleton, Operation>();
             services.AddSingleton<IOperationSingletonInstance>(new Operation(Guid.Empty));
             services.AddTransient<OperationService, OperationService>();
+
+            services.AddDotVue();
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
@@ -35,20 +37,7 @@ namespace WebApp
             app.UseDefaultFiles();
             app.UseStaticFiles();
 
-            app.UseDotVue(c =>
-            {
-                c.Extension = ".vue";
-
-                c.AddAssembly(typeof(Startup).Assembly);
-
-                c.AddCompiler("less", tag =>
-                {
-                    var content = tag.InnerHtml.ToString();
-
-                    return dotless.Core.Less.Parse(content,
-                        new dotless.Core.configuration.DotlessConfiguration { MinifyOutput = true });
-                });
-            });
+            app.UseDotVue(typeof(Startup).Assembly);
         }
     }
 }

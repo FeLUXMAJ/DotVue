@@ -1,4 +1,6 @@
 ﻿using Newtonsoft.Json;
+using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Principal;
@@ -9,159 +11,215 @@ namespace DotVue
     /// <summary>
     /// Render component as javascript vue compoenent
     /// </summary>
-    public class ComponentRender
+    internal class ComponentRender
     {
-        private readonly ComponentInfo _component;
-        private readonly IPrincipal _user;
+        private readonly StringBuilder _writer;
 
-        internal ComponentRender(ComponentInfo component, IPrincipal user)
+        internal ComponentRender(StringBuilder writer)
         {
-            _component = component;
-            _user = user;
+            _writer = writer;
         }
 
-        public void RenderScript(StringBuilder writer)
+        public void RenderComponent(ComponentInfo component)
         {
-            writer.Append("//\n");
-            writer.AppendFormat("// Component: \"{0}\"\n", _component.Name);
-            writer.Append("//\n");
+            _writer.Append($"{{\n");
 
-            // add "style" before return Vue object
-            if (_component.Styles.Count > 0)
+            // add vpath to options
+            _writer.Append($"  name: '{component.Name}',\n");
+
+            if (component.InheritAttrs == false)
             {
-                writer.AppendFormat("Vue.$addStyle('{0}');\n",
-                    string.Join("", _component.Styles.Select(x => x.EncodeJavascript())));
+                _writer.Append($"  inheritAttrs: false,\n");
             }
 
-            writer.Append("return {\n");
-            writer.AppendFormat(" includes: [{0}],\n", string.Join(",", _component.Includes.Select(x => $"'{x}'")));
-            writer.Append(" options: function() { return {\n");
-
-            if (_component.InheritAttrs == false)
+            if (component.Props.Count > 0)
             {
-                writer.Append("  inheritAttrs: false,\n");
-            }
+                _writer.Append($"  props: {{\n");
 
-            if (_component.Props.Count > 0)
-            {
-                writer.AppendFormat("  props: [{0}],\n", string.Join(", ", _component.Props.Select(x => "'" + x.ToCamelCase() + "'")));
-            }
+                foreach(var prop in component.Props)
+                {
+                    var name = prop.Key.ToCamelCase();
+                    var value = JsonConvert.SerializeObject(prop.Value);
+                    var last = prop.Key == component.Props.Last().Key ? "" : ",";
 
-            // only call Created method if created was override in component
-            if (_component.CreatedHook)
-            {
-                writer.Append("  created: function() {\n");
-                writer.Append("    this.OnCreated();\n");
-                writer.Append("  },\n");
+                    _writer.Append($"    {name}: {{ default: {value} }}{last}\n");
+                }
+
+                _writer.Append($"  }},\n");
             }
 
             // append template string
-            writer.AppendFormat("  template: '{0}',\n", _component.Template.EncodeJavascript());
-            writer.AppendFormat("  data: function() {{\n    return {0};\n  }},\n", _component.JsonData);
+            _writer.Append($"  template: `{component.Template.EncodeJavascript('`')}`,\n");
+            _writer.Append($"  data: function() {{\n");
+            _writer.Append($"      return {JsonConvert.SerializeObject(component.JsonData)};\n");
+            _writer.Append($"  }},\n");
 
             // render methods
-            if (_component.Methods.Count > 0)
+            if (component.Methods.Count > 0)
             {
-                writer.Append("  methods: {\n");
+                _writer.Append($"  methods: {{\n");
 
-                foreach (var m in _component.Methods.Values)
+                foreach (var m in component.Methods)
                 {
-                    writer.AppendFormat("    {0}: function({1}) {{\n",
-                        m.Method.Name,
-                        string.Join(", ", m.Parameters));
+                    var name = m.Value.Method.Name.ToCamelCase();
+                    var last = m.Key == component.Methods.Last().Key ? "" : ",";
 
-                    foreach(var script in m.Pre)
-                    {
-                        writer.AppendFormat("      {0}\n", script);
-                    }
-
-                    if (m.Post.Length > 0)
-                    {
-                        writer.Append("      var __vm = this;\n");
-                    }
-
-                    writer.AppendFormat("      return this.$update(this, '{0}', [{1}])",
-                        m.Method.Name,
-                        string.Join(", ", m.Parameters));
-
-                    if (m.Post.Length > 0)
-                    {
-                        writer.Append("\n        .then(function(__result) {");
-                        writer.Append("\n          (function() {");
-                        writer.AppendFormat("\n            {0}", string.Join("\n            ", m.Post));
-                        writer.Append("\n          }).call(__vm);");
-                        writer.Append("\n          return __result;");
-                        writer.Append("\n        });");
-                    }
-                    else
-                    {
-                        writer.Append(";");
-                    }
-
-                    writer.AppendFormat("\n    }}{0}\n", m == _component.Methods.Last().Value ? "" : ","); // method
+                    _writer.Append($"    {name}: function(...args) {{\n");
+                    _writer.Append($"      return this.$server('{name}', ...args);\n");
+                    _writer.Append($"    }}{last}\n"); // method
                 }
 
-                writer.Append("  },\n"); // methods
-            }
-
-            // render def
-            if (_component.Computed.Count > 0)
-            {
-                writer.Append("  computed: {\n");
-
-                foreach (var c in _component.Computed)
-                {
-                    writer.AppendFormat("    {0}: function() {{\n      {1};\n    }}{2}\n",
-                        c.Key,
-                        c.Value,
-                        c.Key == _component.Computed.Last().Key ? "" : ",");
-                }
-
-                writer.Append("  },\n");
+                _writer.Append("  },\n"); // methods
             }
 
             // render watchs
-            var watch = _component.Methods.Where(x => x.Value.Watch != null).ToArray();
+            var watch = component.Methods.Where(x => x.Value.Watch != null).ToArray();
 
-            if (watch.Length > 0)
+            if (watch.Length > 0 || component.LocalStorage.Count > 0)
             {
-                writer.Append("  watch: {\n");
+                _writer.Append($"  watch: {{\n");
 
                 foreach (var w in watch)
                 {
-                    writer.AppendFormat("    {0}: {{\n      handler: function(v, o) {{\n        if (this.$updating) return false;\n        this.{1}(v, o);\n      }},\n      deep: true\n    }}{2}\n",
-                        w.Value.Watch, 
-                        w.Value.Method.Name,
-                        w.Key == watch.Last().Key ? "" : ",");
+                    var name = w.Value.Watch.ToCamelCase();
+                    var method = w.Value.Method.Name.ToCamelCase();
+
+                    _writer.Append($"    {name}: function(v, o) {{\n");
+                    _writer.Append($"      this.{method}(v, o);\n");
+                    _writer.Append($"    }},\n");
                 }
 
-                writer.Append("  },\n");
-            }
-
-            // render scripts
-            if (_component.Scripts.Count > 0)
-            {
-                writer.Append("  mixins: [\n");
-
-                foreach(var s in _component.Scripts)
+                foreach (var w in component.LocalStorage)
                 {
-                    writer.AppendFormat("(function() {{\n{0}\n}})() || {{}}{1}\n",
-                        s,
-                        s == _component.Scripts.Last() ? "": ",");
+                    var name = w.Key.ToCamelCase();
+                    var key = w.Value;
+
+                    _writer.Append($"    {name}: function(v, o) {{\n");
+                    _writer.Append($"      if(v === null || v === undefined) localStorage.removeItem('{key}'); else localStorage.setItem('{key}', v);\n");
+                    _writer.Append($"    }},\n");
                 }
 
-                writer.Append("  ],\n");
+                _writer.Append("  },\n");
             }
 
-            // render client-only properties
-            writer.AppendFormat("  local: [{0}],\n", string.Join(", ", _component.Locals.Select(x => "'" + x + "'")));
+            // render mixin script
+            if (component.Mixins.Count > 0)
+            {
+                _writer.Append($"  mixins: [\n");
 
-            // add vpath to options
-            writer.AppendFormat("  name: '{0}'\n", _component.Name);
+                foreach (var s in component.Mixins)
+                {
+                    var last = s == component.Mixins.Last() ? "" : ",";
 
-            writer.Append(" }\n"); // return object
-            writer.Append("}\n"); // function
-            writer.Append("};"); // options
+                    _writer.Append($"(function() {{\n");
+                    _writer.Append(s);
+                    _writer.Append($"}})() || {{}}{last}\n");
+                }
+
+                _writer.Append("  ],\n");
+            }
+
+            // register initial scripts and/or hood OnCreated server call
+            if (component.CreatedHook || 
+                !string.IsNullOrEmpty(component.Scripts) || 
+                component.QueryString.Count > 0 || 
+                component.RouteParams.Count > 0 || 
+                component.LocalStorage.Count > 0)
+            {
+                _writer.Append($"  created: function() {{\n");
+
+                foreach (var rp in component.RouteParams)
+                {
+                    var name = rp.Key.ToCamelCase();
+
+                    _writer.Append($"    if (this.$route.params.{name} !== undefined) this.{name} = this.$route.params.{name};\n");
+                }
+
+                foreach (var qs in component.QueryString)
+                {
+                    var name = qs.Key.ToCamelCase();
+
+                    _writer.Append($"    if (this.$route.query.{name} !== undefined) this.{name} = this.$route.query.{name};\n");
+                }
+
+                foreach (var ls in component.LocalStorage)
+                {
+                    var name = ls.Key.ToCamelCase();
+                    var key = ls.Value;
+
+                    _writer.Append($"    if (localStorage.getItem('{key}') !== null) this.{name} = localStorage.getItem('{key}');\n");
+                }
+
+                if (!string.IsNullOrEmpty(component.Scripts))
+                {
+                    _writer.Append(component.Scripts);
+                }
+
+                if (component.CreatedHook)
+                {
+                    _writer.Append($"    this.onCreated();\n");
+                }
+
+                _writer.Append($"  }},\n");
+            }
+
+            _writer.Append("  mounted: function() { this.$emit('mounted'); }\n");
+
+            _writer.Append($"}}");
+        }
+
+        public void RenderRegister(IEnumerable<ComponentInfo> components)
+        {
+            foreach (var component in components)
+            {
+                _writer.Append($"Vue.component('{component.Name.ToCamelCase()}', {component.Name});\n");
+            }
+        }
+
+        public void RenderRoutes(ICollection<ComponentInfo> components)
+        {
+            if (components.Count == 0) return;
+
+            _writer.Append($"DotVue.routes = [\n");
+
+            foreach(var component in components)
+            {
+                var last = component == components.Last() ? "" : ",";
+
+                _writer.Append($"  {{ path: '{component.Route}', component: {component.Name} }}{last}\n");
+            }
+
+            _writer.Append($"];\n");
+        }
+
+        public void RenderStyles(IEnumerable<ComponentInfo> components)
+        {
+            var styles = new StringBuilder();
+
+            foreach (var component in components.Where(x => !string.IsNullOrWhiteSpace(x.Styles)))
+            {
+                styles.Append(component.Styles);
+            }
+
+            if (styles.Length > 0)
+            {
+                try
+                {
+                    var s = dotless.Core.LessWeb.Parse(styles.ToString(), new dotless.Core.configuration.DotlessConfiguration
+                    {
+                        MinifyOutput = true,
+                        CacheEnabled = false
+                    });
+
+                    _writer.Append($"var style = document.createElement('style');\n");
+                    _writer.Append($"style.innerText = '{s.EncodeJavascript()}';\n");
+                    _writer.Append($"document.head.appendChild(style);\n");
+                }
+                catch(Exception ex)
+                {
+                    _writer.Append($"document.body.innerHTML = '<h1 style=\"color:red\">LESS compiler error:{ex.Message.EncodeJavascript()}</h1><pre>{ex.StackTrace.EncodeJavascript()}</pre>'");
+                }
+            }
         }
     }
 }

@@ -3,9 +3,9 @@
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
     <PackageId>DotVue</PackageId>
-    <AssemblyVersion>0.9.13.0</AssemblyVersion>
-    <FileVersion>0.9.13</FileVersion>
-    <VersionPrefix>0.9.13</VersionPrefix>
+    <AssemblyVersion>2.0.5.0</AssemblyVersion>
+    <FileVersion>2.0.5</FileVersion>
+    <VersionPrefix>2.0.5</VersionPrefix>
     <Authors>Maurício David</Authors>
     <Product>DotVue</Product>
     <Description>DotVue - Using VueJS with server-side C# view model (for ASP.NET Core)</Description>
@@ -13,6 +13,7 @@
     <NeutralLanguage>en-US</NeutralLanguage>
     <Title>DotVue</Title>
     <PackageId>DotVue</PackageId>
+    <PackageVersion>2.0.5</PackageVersion>
     <PackageTags>server c# asp net core vue vuejs</PackageTags>
     <PackageLicenseUrl>https://raw.github.com/mbdavid/DotVue/master/LICENSE</PackageLicenseUrl>
     <RepositoryUrl>https://github.com/mbdavid/DotVue</RepositoryUrl>
@@ -32,14 +33,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Remove="Scripts\dot-vue.js" />
-  </ItemGroup>
-
-  <ItemGroup>
     <EmbeddedResource Include="Scripts\dot-vue.js" />
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="dotless" Version="1.6.7" />
     <PackageReference Include="Microsoft.AspNetCore" Version="2.1.2" />
     <PackageReference Include="Newtonsoft.Json" Version="11.0.2" />
   </ItemGroup>

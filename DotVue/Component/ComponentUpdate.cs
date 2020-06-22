@@ -10,8 +10,10 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Web;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Newtonsoft.Json.Serialization;
 
 namespace DotVue
 {
@@ -31,16 +33,26 @@ namespace DotVue
 
         #region Update Models
 
-        public async Task UpdateModel(ViewModel vm, string data, string props, string method, JToken[] parameters, IFormFileCollection files, TextWriter writer)
+        public async Task UpdateModel(ViewModel vm, string data, string props, string method, JToken[] parameters, HttpContext context, TextWriter writer)
         {
+            var jsonSerializer = new JsonSerializer
+            {
+                NullValueHandling = NullValueHandling.Include,
+                ObjectCreationHandling = ObjectCreationHandling.Replace,
+                ContractResolver = new CustomContractResolver
+                {
+                    NamingStrategy = new CamelCaseNamingStrategy()
+                }
+            };
+
             // populate my object with client $data
-            JsonConvert.PopulateObject(data, vm, Config.JsonSettings);
+            JsonConvert.PopulateObject(data, vm);
 
             // populate my object with client $props
-            JsonConvert.PopulateObject(props, vm, Config.JsonSettings);
+            JsonConvert.PopulateObject(props, vm);
 
             // parse $data as original value (before any update)
-            var original = JObject.FromObject(vm);
+            var original = JObject.FromObject(vm, jsonSerializer);
 
             try
             {
@@ -48,10 +60,10 @@ namespace DotVue
                 ViewModel.SetData(vm, original);
 
                 // if has method, call in existing vms
-                var result = this.ExecuteMethod(method, vm, parameters, files);
+                var result = this.ExecuteMethod(method, vm, parameters, context.Request.Form.Files, context.RequestServices);
 
                 // now, get viewmodel changes on data
-                var current = JObject.FromObject(vm, Config.JsonSerializer);
+                var current = JObject.FromObject(vm, jsonSerializer);
 
                 // merge all scripts
                 var scripts = ViewModel.GetClientScript(vm);
@@ -68,7 +80,7 @@ namespace DotVue
                         { "script", scripts },
                         { "result", result == null ? null : JToken.FromObject(result) }
                     };
-                    
+
                     await output.WriteToAsync(w);
                 }
             }
@@ -82,7 +94,7 @@ namespace DotVue
         /// <summary>
         /// Find a method in all componenets and execute if found
         /// </summary>
-        private object ExecuteMethod(string name, ViewModel vm, JToken[] parameters, IFormFileCollection files)
+        private object ExecuteMethod(string name, ViewModel vm, JToken[] parameters, IFormFileCollection files, IServiceProvider serviceProvider)
         {
             var met = _component.Methods[name];
             var method = met.Method;
@@ -91,11 +103,21 @@ namespace DotVue
 
             // check for permissions
             if (met.IsAuthenticated && _user.Identity.IsAuthenticated == false) throw new HttpException(401);
-            if (met.Roles.Length > 0 && met.Roles.Any(x => _user.IsInRole(x)) == false) throw new HttpException(403, $"Forbidden. This method requires one of this roles: `{string.Join("`, `", met.Roles)}`");
+            if (met.Roles.Length > 0 && met.Roles.Any(x => _user.IsInRole(x)) == false) throw new HttpException(403, $"Forbidden. This method requires all this roles: `{string.Join("`, `", met.Roles)}`");
 
             // convert each parameter as declared method in type
             foreach (var p in method.GetParameters())
             {
+                // if has no passed parameter, try create instance based on DI
+                if (index >= parameters.Length)
+                {
+                    var value = serviceProvider.GetService(p.ParameterType);
+
+                    pars.Add(value);
+
+                    continue;
+                }
+
                 var token = parameters[index++];
 
                 if (p.ParameterType == typeof(IFormFile))
@@ -107,7 +129,7 @@ namespace DotVue
                 else if (p.ParameterType == typeof(IList<IFormFile>))
                 {
                     var value = ((JValue)token).Value.ToString();
-                
+
                     pars.Add(files.GetFiles(value));
                 }
                 else if (token.Type == JTokenType.Object)

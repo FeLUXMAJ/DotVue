@@ -12,24 +12,21 @@ namespace DotVue
 {
     internal class CustomContractResolver : DefaultContractResolver
     {
-        public static readonly CustomContractResolver Instance = new CustomContractResolver();
-
         protected override IList<JsonProperty> CreateProperties(Type type, MemberSerialization memberSerialization)
         {
-            // ignore Computed property
-            var props = base.CreateProperties(type, memberSerialization)
-                .Where(x => x.AttributeProvider.GetAttributes(typeof(ComputedAttribute), true).Count == 0)
+            var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .Select(x => x as MemberInfo);
+
+            var fields = type.GetFields(BindingFlags.Public | BindingFlags.Instance)
+                .Where(x => x.GetCustomAttribute<RouteParamAttribute>(true) != null || x.GetCustomAttribute<QueryStringAttribute>(true) != null)
+                .Select(x => x as MemberInfo);
+
+            var props = properties
+                .Union(fields)
+                .Select(p => base.CreateProperty(p, memberSerialization))
                 .ToList();
 
-            // props must be write-only
-            props.ForEach(x =>
-            {
-                if(x.AttributeProvider.GetAttributes(true).Any(z => z.GetType() == typeof(PropAttribute)))
-                {
-                    x.Readable = false;
-                    x.Writable = true;
-                }
-            });
+            props.ForEach(p => { p.Writable = true; p.Readable = true; });
 
             return props;
         }
